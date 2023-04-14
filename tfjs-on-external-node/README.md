@@ -7,6 +7,10 @@ https://source.chromium.org/chromium/chromium/src/+/main:third_party/dawn/src/da
 
 2. npm install
 3. copy dawn.node to build/folder.
+mkdir build
+cp dawn.node ./build
+mkdir ./node_modules/@tensorflow/tfjs-backend-webgpu/build/
+cp dawn.node ./node_modules/@tensorflow/tfjs-backend-webgpu/build/
 4. cp tf-backend-webgpu.node.js node_modules/@tensorflow/tfjs-backend-webgpu/dist/tf-backend-webgpu.node.js 
 5. node .
 
