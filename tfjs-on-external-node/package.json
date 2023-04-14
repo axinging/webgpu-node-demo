@@ -1,0 +1,21 @@
+{
+  "name": "hello_world",
+  "version": "0.0.0",
+  "description": "Node.js Addons Example #1",
+  "main": "dawn.js",
+  "private": true,
+  "dependencies": {
+    "@tensorflow/tfjs": "^4.2.0",
+    "@tensorflow/tfjs-backend-wasm": "^4.2.0",
+    "@tensorflow/tfjs-backend-webgl": "^4.2.0",
+    "@tensorflow/tfjs-backend-webgpu": "^0.0.1-alpha.17",
+    "@tensorflow/tfjs-converter": "^4.2.0",
+    "@tensorflow/tfjs-core": "^4.2.0",
+    "bindings": "~1.2.1",
+    "node-addon-api": "^1.0.0"
+  },
+  "scripts": {
+    "test": "node dawn.js"
+  },
+  "gypfile": true
+}
