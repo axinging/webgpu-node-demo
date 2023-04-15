@@ -24,6 +24,7 @@ yarn && yarn build-npm
 ```
 
 3. Run
+```
 git clone https://github.com/axinging/webgpu-node.git
 cd webgpu-node
 npm install
@@ -33,4 +34,4 @@ mkdir ./node_modules/@tensorflow/tfjs-backend-webgpu/build/
 cp dawn.node ./node_modules/@tensorflow/tfjs-backend-webgpu/build/
 cp tf-backend-webgpu.node.js node_modules/@tensorflow/tfjs-backend-webgpu/dist/tf-backend-webgpu.node.js 
 node .
-
+```
