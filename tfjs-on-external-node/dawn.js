@@ -6,7 +6,6 @@ const tf = require('@tensorflow/tfjs-core');
 console.log(tfwebgpu);
 console.log(tfwebgpu.webgpu_util.isWebGPUSupported());
 
-
 console.log(tf.engine().backendNames());
 let gpuProvider = null;
 function setGPUProvider() {
