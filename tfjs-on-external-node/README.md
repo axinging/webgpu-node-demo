@@ -1,5 +1,5 @@
 webgpu-node supports running webgpu and TensorflowJS(WIP) on NodeJS.
-
+(Currently only Linux is supportted)
 ## Building: 
 1. Build dawn.node
 https://source.chromium.org/chromium/chromium/src/+/main:third_party/dawn/src/dawn/node/README.md
@@ -24,6 +24,8 @@ yarn && yarn build-npm
 ```
 
 3. Run
+git clone https://github.com/axinging/webgpu-node.git
+cd webgpu-node
 npm install
 mkdir build
 cp dawn.node ./build
