@@ -16,30 +16,10 @@
  */
 'use strict';
 
-Object.defineProperty(exports, '__esModule', { value: true });
-
 var tf = require('@tensorflow/tfjs-core');
-const gpuProviderModule = require('bindings')('dawn');
-let gpuProvider = null;
-function setGPUProvider() {
-  const gpuProviderFlags = ['disable-dawn-features=disallow_unsafe_apis'];
-  gpuProvider = () => gpuProviderModule.create(gpuProviderFlags);
-}
-let gpuImpl = null;
-function getGPU() {
-  if (gpuImpl) {
-    return gpuImpl;
-  }
-  gpuImpl = gpuProvider();
-  return gpuImpl;
-}
+var nodeWebGPUBinding = require('bindings');
 
-setGPUProvider();
-const navigator = {gpu: null};
-navigator.gpu = getGPU();
-
-function _interopNamespace(e) {
-    if (e && e.__esModule) return e;
+function _interopNamespaceDefault(e) {
     var n = Object.create(null);
     if (e) {
         Object.keys(e).forEach(function (k) {
@@ -52,11 +32,11 @@ function _interopNamespace(e) {
             }
         });
     }
-    n["default"] = e;
+    n.default = e;
     return n;
 }
 
-var tf__namespace = /*#__PURE__*/_interopNamespace(tf);
+var tf__namespace = /*#__PURE__*/_interopNamespaceDefault(tf);
 
 /******************************************************************************
 Copyright (c) Microsoft Corporation.
@@ -296,6 +276,12 @@ ENV.registerFlag('WEBGPU_THRESHOLD_TO_INCREASE_WORKGROUPS_FOR_MATMUL', function 
  * Whether we will run im2col as a separate shader for convolution.
  */
 ENV.registerFlag('WEBGPU_CONV_SEPARATE_IM2COL_SHADER', function () { return false; });
+/**
+ * A string used to match shader key. If any matches, print the related shader.
+ * Seperated by comma. 'all' to print all. 'binary' to print binary(add, mul,
+ * etc.). 'unary,conv2d' to print both unary and conv2d.
+ */
+ENV.registerFlag('WEBGPU_PRINT_SHADER', function () { return ''; });
 
 /**
  * @license
@@ -364,56 +350,59 @@ var BufferManager = /** @class */ (function () {
         this.numBytesUsed = 0;
         this.numBytesAllocated = 0;
     }
-    // The upload buffer is not reusable.
-    BufferManager.prototype.acquireUploadBuffer = function (size, usage) {
-        this.numBytesAllocated += size;
-        return this.device.createBuffer({ size: size, usage: usage, mappedAtCreation: true });
-    };
-    BufferManager.prototype.acquireBuffer = function (size, usage, mappedAtCreation) {
+    BufferManager.prototype.acquireBuffer = function (size, usage, mappedAtCreation, reuse) {
         if (mappedAtCreation === void 0) { mappedAtCreation = false; }
+        if (reuse === void 0) { reuse = true; }
+        var buffer;
         var key = getBufferKey(size, usage);
-        if (!this.freeBuffers.has(key)) {
-            this.freeBuffers.set(key, []);
+        if (reuse) {
+            if (!this.freeBuffers.has(key)) {
+                this.freeBuffers.set(key, []);
+            }
+            if (this.freeBuffers.get(key).length > 0) {
+                buffer = this.freeBuffers.get(key).pop();
+                this.numFreeBuffers--;
+            }
+            else {
+                buffer = this.device.createBuffer({ size: size, usage: usage, mappedAtCreation: mappedAtCreation });
+                this.numBytesAllocated += size;
+            }
+        }
+        else {
+            buffer = this.device.createBuffer({ size: size, usage: usage, mappedAtCreation: mappedAtCreation });
+            this.numBytesAllocated += size;
         }
         if (!this.usedBuffers.has(key)) {
             this.usedBuffers.set(key, []);
         }
-        this.numBytesUsed += size;
+        this.usedBuffers.get(key).push(buffer);
         this.numUsedBuffers++;
-        if (this.freeBuffers.get(key).length > 0) {
-            this.numFreeBuffers--;
-            var newBuffer_1 = this.freeBuffers.get(key).shift();
-            this.usedBuffers.get(key).push(newBuffer_1);
-            return newBuffer_1;
-        }
-        this.numBytesAllocated += size;
-        var newBuffer = this.device.createBuffer({ size: size, usage: usage, mappedAtCreation: mappedAtCreation });
-        this.usedBuffers.get(key).push(newBuffer);
-        return newBuffer;
+        this.numBytesUsed += size;
+        return buffer;
     };
-    BufferManager.prototype.releaseBuffer = function (buffer, size, usage) {
+    BufferManager.prototype.releaseBuffer = function (buffer, size, usage, reuse) {
+        if (reuse === void 0) { reuse = true; }
         if (this.freeBuffers.size === 0) {
             return;
         }
         var key = getBufferKey(size, usage);
-        if (!this.freeBuffers.has(key)) {
-            this.freeBuffers.set(key, []);
+        var bufferArray = this.usedBuffers.get(key);
+        var index = bufferArray.indexOf(buffer);
+        if (index < 0) {
+            throw new Error('Cannot find the buffer in buffer manager');
         }
-        this.freeBuffers.get(key).push(buffer);
-        this.numFreeBuffers++;
+        bufferArray[index] = bufferArray[bufferArray.length - 1];
+        bufferArray.pop();
         this.numUsedBuffers--;
-        var bufferList = this.usedBuffers.get(key);
-        var bufferIndex = bufferList.indexOf(buffer);
-        if (bufferIndex < 0) {
-            throw new Error('Cannot release a buffer that was never provided by this ' +
-                'buffer manager');
-        }
-        bufferList.splice(bufferIndex, 1);
         this.numBytesUsed -= size;
-    };
-    BufferManager.prototype.releaseUploadBuffer = function (buffer) {
-        this.numBytesAllocated -= buffer.size;
-        buffer.destroy();
+        if (reuse) {
+            this.freeBuffers.get(key).push(buffer);
+            this.numFreeBuffers++;
+        }
+        else {
+            buffer.destroy();
+            this.numBytesAllocated -= size;
+        }
     };
     BufferManager.prototype.getNumUsedBuffers = function () {
         return this.numUsedBuffers;
@@ -616,7 +605,7 @@ var atomicAddSnippet = function (ptr, v, type) {
  * limitations under the License.
  * =============================================================================
  */
-var compileProgram = function (device, program, inputsData, output) {
+var compileProgram = function (device, program, inputsData, output, shaderKey) {
     var outputData = { dtype: output.dtype, shape: output.shape };
     var source = makeShader(inputsData, outputData, program);
     var module = device.createShaderModule({ code: source, label: program.constructor.name });
@@ -625,7 +614,17 @@ var compileProgram = function (device, program, inputsData, output) {
         label: program.constructor.name,
         layout: 'auto'
     });
-    console.log(source);
+    var printShaderString = tf.env().get('WEBGPU_PRINT_SHADER');
+    if (printShaderString !== '') {
+        printShaderString = printShaderString.toLowerCase();
+        var printShaderArray = printShaderString.split(',');
+        if (printShaderString === 'all' ||
+            printShaderArray.some(function (item) { return shaderKey.toLowerCase().includes(item); })) {
+            console.group(shaderKey);
+            console.debug(source);
+            console.groupEnd();
+        }
+    }
     return pipeline;
 };
 var typeSnippet = function (component, type) {
@@ -1174,14 +1173,15 @@ function GPUBytesPerElement(dtype) {
         throw new Error("Unknown dtype ".concat(dtype));
     }
 }
+function isNode() {
+    return (typeof navigator !== 'undefined' && navigator.gpu) === false;
+}
 function isWebGPUSupported() {
-    /*
-    return ((typeof window !== 'undefined') ||
+    return (((typeof window !== 'undefined') ||
         //@ts-ignore
         (typeof WorkerGlobalScope !== 'undefined')) &&
-        !!navigator.gpu;
-    */
-    return true;
+        !!navigator.gpu) ||
+        isNode();
 }
 function assertNotComplex(tensor, opName) {
     if (!Array.isArray(tensor)) {
@@ -1205,16 +1205,17 @@ var MatMulProgramType;
 
 var webgpu_util = {
     __proto__: null,
-    tilesFitEvenlyIntoShape: tilesFitEvenlyIntoShape,
+    GPUBytesPerElement: GPUBytesPerElement,
+    get MatMulProgramType () { return MatMulProgramType; },
+    assertNotComplex: assertNotComplex,
     computeDispatch: computeDispatch,
+    computeWorkPerThreadForConv2d: computeWorkPerThreadForConv2d,
     computeWorkgroupInfoForMatMul: computeWorkgroupInfoForMatMul,
     computeWorkgroupSizeForConv2d: computeWorkgroupSizeForConv2d,
-    computeWorkPerThreadForConv2d: computeWorkPerThreadForConv2d,
     flatDispatchLayout: flatDispatchLayout,
-    GPUBytesPerElement: GPUBytesPerElement,
+    isNode: isNode,
     isWebGPUSupported: isWebGPUSupported,
-    assertNotComplex: assertNotComplex,
-    get MatMulProgramType () { return MatMulProgramType; }
+    tilesFitEvenlyIntoShape: tilesFitEvenlyIntoShape
 };
 
 // Empirically determined constant used to determine size threshold for handing
@@ -1411,8 +1412,8 @@ var WebGPUBackend = /** @class */ (function (_super) {
             _this.releaseResource(d);
             _this.tensorMap.delete(d);
         });
-        this.uniformPendingDisposal.forEach(function (d) { return _this.bufferManager.releaseBuffer(d.buffer, d.size, d.usage); });
-        this.stagingPendingDisposal.forEach(function (buf) { return _this.bufferManager.releaseUploadBuffer(buf); });
+        this.uniformPendingDisposal.forEach(function (b) { return _this.bufferManager.releaseBuffer(b.buffer, b.size, b.usage); });
+        this.stagingPendingDisposal.forEach(function (b) { return _this.bufferManager.releaseBuffer(b.buffer, b.size, b.usage, false); });
         this.tensorDataPendingDisposal = [];
         this.uniformPendingDisposal = [];
         this.stagingPendingDisposal = [];
@@ -1705,9 +1706,14 @@ var WebGPUBackend = /** @class */ (function (_super) {
         var buffer;
         if (tensorData.values) {
             buffer = this.bufferManager.acquireBuffer(size, this.defaultGpuBufferUsage(), true);
-            // if (buffer.mapState === 'unmapped') {
-            if (true) {
-                var stagingBuffer = this.bufferManager.acquireUploadBuffer(size, GPUBufferUsage.MAP_WRITE | GPUBufferUsage.COPY_SRC);
+            var unmappedState = true;
+            /*
+                !!global.nodeGpu ? true : buffer.mapState === 'unmapped';
+            if (global.nodeGpu) {
+              console.warn('adapter.requestAdapterInfo is not supportted on node!');
+            }*/
+            if (unmappedState) {
+                var stagingBuffer = this.bufferManager.acquireBuffer(size, GPUBufferUsage.MAP_WRITE | GPUBufferUsage.COPY_SRC, true, false);
                 var arrayBuffer = stagingBuffer.getMappedRange();
                 if (tensorData.dtype === 'int32' || tensorData.dtype === 'bool') {
                     new Int32Array(arrayBuffer).set(tensorData.values);
@@ -1719,7 +1725,11 @@ var WebGPUBackend = /** @class */ (function (_super) {
                 this.ensureCommandEncoderReady();
                 this.ensureComputePassEnded();
                 this.currentCommandEncoder.copyBufferToBuffer(stagingBuffer, 0, buffer, 0, size);
-                this.stagingPendingDisposal.push(stagingBuffer);
+                this.stagingPendingDisposal.push({
+                    size: size,
+                    usage: GPUBufferUsage.MAP_WRITE | GPUBufferUsage.COPY_SRC,
+                    buffer: stagingBuffer
+                });
             }
             else {
                 var arrayBuffer = buffer.getMappedRange();
@@ -1863,14 +1873,14 @@ var WebGPUBackend = /** @class */ (function (_super) {
                 name: program.variableNames[i]
             };
         });
-        var key = makeShaderKey(program, bufferShapes, inputsData, output);
+        var shaderKey = makeShaderKey(program, bufferShapes, inputsData, output);
         var pipeline;
-        if (key in this.pipelineCache) {
-            pipeline = this.pipelineCache[key];
+        if (shaderKey in this.pipelineCache) {
+            pipeline = this.pipelineCache[shaderKey];
         }
         else {
-            pipeline = compileProgram(this.device, program, inputsData, output);
-            this.pipelineCache[key] = pipeline;
+            pipeline = compileProgram(this.device, program, inputsData, output, shaderKey);
+            this.pipelineCache[shaderKey] = pipeline;
         }
         if (programDefinedUniform) {
             programUniform = __spreadArray(__spreadArray([], __read(programUniform), false), __read(programDefinedUniform), false);
@@ -1967,11 +1977,22 @@ var WebGPUBackend = /** @class */ (function (_super) {
 }(tf.KernelBackend));
 WebGPUBackend.nextDataId = 0;
 
+var nodeGPU = null;
+function getGPU() {
+    if (nodeGPU) {
+        return nodeGPU;
+    }
+    var gpuProviderModule = nodeWebGPUBinding('dawn');
+    console.log(gpuProviderModule);
+    var gpuProviderFlags = ['disable-dawn-features=disallow_unsafe_apis'];
+    nodeGPU = gpuProviderModule.create(gpuProviderFlags); // gpuProvider();
+    return nodeGPU;
+}
 if (isWebGPUSupported()) {
     tf.registerBackend('webgpu', function () { return __awaiter(void 0, void 0, void 0, function () {
-        var gpuDescriptor, adapter, deviceDescriptor, adapterLimits, device, adapterInfo;
-        return __generator(this, function (_a) {
-            switch (_a.label) {
+        var gpuDescriptor, adapter, _a, deviceDescriptor, adapterLimits, device, adapterInfo;
+        return __generator(this, function (_b) {
+            switch (_b.label) {
                 case 0:
                     // Remove it once we figure out how to correctly read the tensor data
                     // before the tensor is disposed in profiling mode.
@@ -1981,9 +2002,17 @@ if (isWebGPUSupported()) {
                             'low-power' :
                             'high-performance'
                     };
-                    return [4 /*yield*/, navigator.gpu.requestAdapter(gpuDescriptor)];
+                    if (!isNode()) return [3 /*break*/, 2];
+                    return [4 /*yield*/, getGPU().requestAdapter(gpuDescriptor)];
                 case 1:
-                    adapter = _a.sent();
+                    _a = _b.sent();
+                    return [3 /*break*/, 4];
+                case 2: return [4 /*yield*/, navigator.gpu.requestAdapter(gpuDescriptor)];
+                case 3:
+                    _a = _b.sent();
+                    _b.label = 4;
+                case 4:
+                    adapter = _a;
                     deviceDescriptor = {};
                     // Note that timestamp-query-inside-passes is not formally in spec as
                     // timestamp within a pass is not generally supported on all the platforms.
@@ -2000,14 +2029,16 @@ if (isWebGPUSupported()) {
                         'maxComputeWorkgroupsPerDimension': adapterLimits.maxComputeWorkgroupsPerDimension,
                         'maxStorageBufferBindingSize': adapterLimits.maxStorageBufferBindingSize,
                         'maxBufferSize': adapterLimits.maxBufferSize,
+                        'maxComputeWorkgroupSizeX': adapterLimits.maxComputeWorkgroupSizeX,
+                        'maxComputeInvocationsPerWorkgroup': adapterLimits.maxComputeInvocationsPerWorkgroup,
                     };
                     return [4 /*yield*/, adapter.requestDevice(deviceDescriptor)];
-                case 2:
-                    device = _a.sent();
-                    // return [4 /*yield*/, adapter.requestAdapterInfo()];
-                    return [4 /*yield*/, {}];
-                case 3:
-                    adapterInfo = _a.sent();
+                case 5:
+                    device = _b.sent();
+                    adapterInfo = {};
+                    {
+                        console.warn('adapter.requestAdapterInfo is not supportted on node!');
+                    }
                     return [2 /*return*/, new WebGPUBackend(device, adapterInfo)];
             }
         });
@@ -2461,13 +2492,14 @@ var writeDataToSubAVec4Snippet = function (transpose, innerElementSize) {
 var calculateResultSnippet = function (transposeA, innerElementSize, rowPerThread) {
     if (transposeA) {
         return "\n        let ACached0 = mm_Asub[k * ".concat(innerElementSize, "][localRow];\n        let ACached1 = mm_Asub[k * ").concat(innerElementSize, " + 1][localRow];\n        let ACached2 = mm_Asub[k * ").concat(innerElementSize, " + 2][localRow];\n        ").concat(innerElementSize === 3 ? '' :
-            "let ACached3 = mm_Asub[k * ".concat(innerElementSize, " + 3][localRow];"), "\n        for (var i = 0; i < ").concat(rowPerThread, "; i++) {\n          acc[i] = BCached0 * ACached0[i] + acc[i];\n          acc[i] = BCached1 * ACached1[i] + acc[i];\n          acc[i] = BCached2 * ACached2[i] + acc[i];\n          ").concat(innerElementSize === 3 ?
+            "let ACached3 = mm_Asub[k * ".concat(innerElementSize, " + 3][localRow];"), "\n        for (var i = 0; i < ").concat(rowPerThread, "; i++) {\n          acc[i] = fma(BCached0, vec4<f32>(ACached0[i]), acc[i]);\n          acc[i] = fma(BCached1, vec4<f32>(ACached1[i]), acc[i]);\n          acc[i] = fma(BCached2, vec4<f32>(ACached2[i]), acc[i]);\n          ").concat(innerElementSize === 3 ?
             '' :
-            'acc[i] = BCached3 * ACached3[i] + acc[i];', "\n        }");
+            'acc[i] = fma(BCached3, vec4<f32>(ACached3[i]), acc[i]);', "\n        }");
     }
     else {
-        return "\n        for (var i = 0; i < ".concat(rowPerThread, "; i++) {\n          let ACached = mm_Asub[tileRow + i][k];\n          acc[i] = BCached0 * ACached.x + acc[i];\n          acc[i] = BCached1 * ACached.y + acc[i];\n          acc[i] = BCached2 * ACached.z + acc[i];\n          ").concat(innerElementSize === 3 ? '' :
-            'acc[i] = BCached3 * ACached.w + acc[i];', "\n        }");
+        return "\n        for (var i = 0; i < ".concat(rowPerThread, "; i++) {\n          let ACached = mm_Asub[tileRow + i][k];\n          acc[i] = fma(BCached0, vec4<f32>(ACached.x), acc[i]);\n          acc[i] = fma(BCached1, vec4<f32>(ACached.y), acc[i]);\n          acc[i] = fma(BCached2, vec4<f32>(ACached.z), acc[i]);\n          ").concat(innerElementSize === 3 ?
+            '' :
+            'acc[i] = fma(BCached3, vec4<f32>(ACached.w), acc[i]);', "\n        }");
     }
 };
 function makeMatMulPackedVec4Source(workPerThread, workgroupSize, transposeA, tileInner, splitK, splitedDimInner, broadcastBatch) {
@@ -2528,8 +2560,8 @@ function makeMatMulPackedSource(workPerThread, workgroupSize, transposeA, tileIn
     var matmulSnippet = sequentialAccessByThreads ?
         "\n      let localRow = i32(localId.y);\n      let localCol = i32(localId.x);\n      let globalRowStart = i32(workgroupId.y) * ".concat(tileAOuter, ";\n      let globalColStart = i32(workgroupId.x) * ").concat(tileBOuter, ";\n\n      // Loop over shared dimension.\n      for (var t = 0; t < numTiles; t++) {\n        // Load one tile of A into local memory.\n        for (var inputRow = localRow; inputRow < ").concat(tileAHight, "; inputRow = inputRow + ").concat(workgroupSize[1], ") {\n          for (var inputCol = localCol; inputCol < ").concat(tileAWidth, "; inputCol = inputCol + ").concat(workgroupSize[0], ") {\n            ").concat(writeDataToSubASnippet(transposeA), "\n          }\n        }\n        // Load one tile of B into local memory.\n        for (var inputRow = localRow; inputRow < ").concat(tileInner, "; inputRow = inputRow + ").concat(workgroupSize[1], ") {\n              for (var inputCol = localCol; inputCol < ").concat(tileBOuter, "; inputCol = inputCol + ").concat(workgroupSize[0], ") {\n            mm_Bsub[inputRow][inputCol] = mm_readB(batchB,\n              kStart + inputRow,\n              globalColStart + inputCol);\n          }\n        }\n        kStart = kStart + ").concat(tileInner, ";\n        workgroupBarrier();\n\n        // Compute acc values for a single thread.\n        var BCached : array<f32, ").concat(colPerThread, ">;\n        for (var k = 0; k < ").concat(tileInner, "; k++) {\n          for (var inner = 0; inner < ").concat(colPerThread, "; inner++) {\n            BCached[inner] = mm_Bsub[k][localCol + inner * ").concat(workgroupSize[0], "];\n          }\n          for (var innerRow = 0; innerRow < ").concat(rowPerThread, "; innerRow++) {\n            let ACached = ").concat(transposeA ?
             "mm_Asub[k][localRow + innerRow * ".concat(workgroupSize[1], "];") :
-            "mm_Asub[localRow + innerRow * ".concat(workgroupSize[1], "][k];"), "\n            for (var innerCol = 0; innerCol < ").concat(colPerThread, "; innerCol++) {\n              acc[innerRow][innerCol] = acc[innerRow][innerCol] +\n                  ACached * BCached[innerCol];\n            }\n          }\n        }\n        workgroupBarrier();\n      }\n      for (var innerRow = 0; innerRow < ").concat(rowPerThread, "; innerRow++) {\n        let gRow = globalRowStart + localRow + innerRow * ").concat(workgroupSize[1], ";\n        for (var innerCol = 0; innerCol < ").concat(colPerThread, "; innerCol++) {\n          let gCol = globalColStart + localCol + innerCol * ").concat(workgroupSize[0], ";\n          mm_write(batch, gRow, gCol, acc[innerRow][innerCol]);\n        }\n      }\n      ") :
-        "\n  let tileRow = i32(localId.y) * ".concat(rowPerThread, ";\n  let tileCol = i32(localId.x) * ").concat(colPerThread, ";\n\n  let globalRow = i32(globalId.y) * ").concat(rowPerThread, ";\n  let globalCol = i32(globalId.x) * ").concat(colPerThread, ";\n  let globalRowStart = i32(workgroupId.y) * ").concat(tileAOuter, ";\n\n  let tileRowA = i32(localId.y) * ").concat(rowPerThreadA, ";\n  let tileColA = i32(localId.x) * ").concat(colPerThreadA, ";\n  let tileRowB = i32(localId.y) * ").concat(rowPerThreadB, ";\n  // Loop over shared dimension.\n  for (var t = 0; t < numTiles; t++) {\n    // Load one tile of A into local memory.\n    for (var innerRow = 0; innerRow < ").concat(rowPerThreadA, "; innerRow++) {\n      for (var innerCol = 0; innerCol < ").concat(colPerThreadA, "; innerCol++) {\n        let inputRow = tileRowA + innerRow;\n        let inputCol = tileColA + innerCol;\n        ").concat(writeDataToSubASnippet(transposeA), "\n      }\n    }\n\n    // Load one tile of B into local memory.\n    for (var innerRow = 0; innerRow < ").concat(rowPerThreadB, "; innerRow++) {\n      for (var innerCol = 0; innerCol < ").concat(colPerThread, "; innerCol++) {\n        let inputRow = tileRowB + innerRow;\n        let inputCol = tileCol + innerCol;\n        mm_Bsub[inputRow][inputCol] = mm_readB(batchB,\n          kStart + inputRow,\n          globalCol + innerCol);\n      }\n    }\n    kStart = kStart + ").concat(tileInner, ";\n    workgroupBarrier();\n\n    // Compute acc values for a single thread.\n    var BCached : array<f32, ").concat(colPerThread, ">;\n    for (var k = 0; k < ").concat(tileInner, "; k++) {\n      for (var inner = 0; inner < ").concat(colPerThread, "; inner++) {\n        BCached[inner] = mm_Bsub[k][tileCol + inner];\n      }\n\n      for (var innerRow = 0; innerRow < ").concat(rowPerThread, "; innerRow++) {\n        ").concat(readDataFromSubASnippet(transposeA), "\n        for (var innerCol = 0; innerCol < ").concat(colPerThread, "; innerCol++) {\n          acc[innerRow][innerCol] = acc[innerRow][innerCol] + ACached * BCached[innerCol];\n        }\n      }\n    }\n\n    workgroupBarrier();\n  }\n\n  for (var innerRow = 0; innerRow < ").concat(rowPerThread, "; innerRow++) {\n    for (var innerCol = 0; innerCol < ").concat(colPerThread, "; innerCol++) {\n      mm_write(batch, globalRow + innerRow, globalCol + innerCol,\n          acc[innerRow][innerCol]);\n    }\n  }\n  ");
+            "mm_Asub[localRow + innerRow * ".concat(workgroupSize[1], "][k];"), "\n            for (var innerCol = 0; innerCol < ").concat(colPerThread, "; innerCol++) {\n              acc[innerRow][innerCol] =\n                  fma(ACached, BCached[innerCol], acc[innerRow][innerCol]);\n            }\n          }\n        }\n        workgroupBarrier();\n      }\n      for (var innerRow = 0; innerRow < ").concat(rowPerThread, "; innerRow++) {\n        let gRow = globalRowStart + localRow + innerRow * ").concat(workgroupSize[1], ";\n        for (var innerCol = 0; innerCol < ").concat(colPerThread, "; innerCol++) {\n          let gCol = globalColStart + localCol + innerCol * ").concat(workgroupSize[0], ";\n          mm_write(batch, gRow, gCol, acc[innerRow][innerCol]);\n        }\n      }\n      ") :
+        "\n  let tileRow = i32(localId.y) * ".concat(rowPerThread, ";\n  let tileCol = i32(localId.x) * ").concat(colPerThread, ";\n\n  let globalRow = i32(globalId.y) * ").concat(rowPerThread, ";\n  let globalCol = i32(globalId.x) * ").concat(colPerThread, ";\n  let globalRowStart = i32(workgroupId.y) * ").concat(tileAOuter, ";\n\n  let tileRowA = i32(localId.y) * ").concat(rowPerThreadA, ";\n  let tileColA = i32(localId.x) * ").concat(colPerThreadA, ";\n  let tileRowB = i32(localId.y) * ").concat(rowPerThreadB, ";\n  // Loop over shared dimension.\n  for (var t = 0; t < numTiles; t++) {\n    // Load one tile of A into local memory.\n    for (var innerRow = 0; innerRow < ").concat(rowPerThreadA, "; innerRow++) {\n      for (var innerCol = 0; innerCol < ").concat(colPerThreadA, "; innerCol++) {\n        let inputRow = tileRowA + innerRow;\n        let inputCol = tileColA + innerCol;\n        ").concat(writeDataToSubASnippet(transposeA), "\n      }\n    }\n\n    // Load one tile of B into local memory.\n    for (var innerRow = 0; innerRow < ").concat(rowPerThreadB, "; innerRow++) {\n      for (var innerCol = 0; innerCol < ").concat(colPerThread, "; innerCol++) {\n        let inputRow = tileRowB + innerRow;\n        let inputCol = tileCol + innerCol;\n        mm_Bsub[inputRow][inputCol] = mm_readB(batchB,\n          kStart + inputRow,\n          globalCol + innerCol);\n      }\n    }\n    kStart = kStart + ").concat(tileInner, ";\n    workgroupBarrier();\n\n    // Compute acc values for a single thread.\n    var BCached : array<f32, ").concat(colPerThread, ">;\n    for (var k = 0; k < ").concat(tileInner, "; k++) {\n      for (var inner = 0; inner < ").concat(colPerThread, "; inner++) {\n        BCached[inner] = mm_Bsub[k][tileCol + inner];\n      }\n\n      for (var innerRow = 0; innerRow < ").concat(rowPerThread, "; innerRow++) {\n        ").concat(readDataFromSubASnippet(transposeA), "\n        for (var innerCol = 0; innerCol < ").concat(colPerThread, "; innerCol++) {\n          acc[innerRow][innerCol] =\n              fma(ACached, BCached[innerCol], acc[innerRow][innerCol]);\n        }\n      }\n    }\n\n    workgroupBarrier();\n  }\n\n  for (var innerRow = 0; innerRow < ").concat(rowPerThread, "; innerRow++) {\n    for (var innerCol = 0; innerCol < ").concat(colPerThread, "; innerCol++) {\n      mm_write(batch, globalRow + innerRow, globalCol + innerCol,\n          acc[innerRow][innerCol]);\n    }\n  }\n  ");
     return "\n    var<workgroup> mm_Asub : array<array<f32, ".concat(tileAWidth, ">, ").concat(tileAHight, ">;\n    var<workgroup> mm_Bsub : array<array<f32, ").concat(tileBOuter, ">, ").concat(tileInner, ">;\n\n    ").concat(getMainHeaderString(), " {\n      let batch = ").concat(splitK ? '0' : 'i32(globalId.z)', ";\n      let batchA = ").concat(splitK || !broadcastBatch ? 'batch' : 'batch % uniforms.aShape[0]', ";\n      let batchB = ").concat(splitK || !broadcastBatch ? 'batch' : 'batch % uniforms.bShape[0]', ";\n      let numTiles = ").concat(splitK ? "".concat(Math.ceil(splitedDimInner / tileInner)) :
         "(uniforms.dimInner - 1) / ".concat(tileInner, " + 1"), ";\n      var kStart = ").concat(splitK ? "i32(globalId.z) * ".concat(splitedDimInner) : '0', ";\n\n      var acc : array<array<f32, ").concat(colPerThread, ">, ").concat(rowPerThread, ">;\n\n      // Without this initialization strange values show up in acc.\n      for (var innerRow = 0; innerRow < ").concat(rowPerThread, "; innerRow++) {\n        for (var innerCol = 0; innerCol < ").concat(colPerThread, "; innerCol++) {\n          acc[innerRow][innerCol] = 0.0;\n        }\n      }\n      ").concat(matmulSnippet, "\n    }\n  ");
 }
@@ -4924,14 +4956,26 @@ var transposeConfig = {
 };
 
 var ReduceProgram = /** @class */ (function () {
-    function ReduceProgram(reduceInfo, reduceType) {
-        this.workgroupSize = [64, 1, 1];
+    function ReduceProgram(reduceInfo, reduceType, maxComputeWorkgroupSizeX) {
         this.variableNames = ['x'];
         this.uniforms = 'reduceSize : i32,';
         this.size = true;
         this.inputShape = [reduceInfo.batchSize, reduceInfo.inSize];
         var _a = __read(tf.backend_util.computeOutAndReduceShapes(this.inputShape, [1]), 1), outputShape = _a[0];
         this.outputShape = outputShape.length === 0 ? [1] : outputShape;
+        // If reduceSize |reduceInfo.inSize| is very large, the I/O accessing will
+        // become the bottleneck. Increasing workgroupSize can reduce the times of
+        // accessing global memory. The threshold value is just to make sure the
+        // reduceSize is large enough for a bigger workgroupSize.
+        if (reduceInfo.inSize >= 32768 && maxComputeWorkgroupSizeX >= 512) {
+            this.workgroupSize = [512, 1, 1];
+        }
+        else if (reduceInfo.inSize >= 4096) {
+            this.workgroupSize = [256, 1, 1];
+        }
+        else {
+            this.workgroupSize = [64, 1, 1];
+        }
         this.dispatchLayout = flatDispatchLayout(this.outputShape);
         // A work group only outputs a data, so we transfer [1, 1, 1] to compute
         // dispatch size.
@@ -5021,7 +5065,7 @@ function reduce(x, axis, keepDims, reduceType, backend) {
         var uniformData = [
             { type: 'int32', data: [inSize] },
         ];
-        var program = new ReduceProgram(reduceInfo, reduceType);
+        var program = new ReduceProgram(reduceInfo, reduceType, backend.device.limits.maxComputeWorkgroupSizeX);
         var reduced = backend.runWebGPUProgram(program, [input], dtype, uniformData);
         toDispose.push(reduced);
         res = reshape({ inputs: { x: reduced }, attrs: { shape: resOutShape }, backend: backend });
@@ -13571,7 +13615,7 @@ var UnsortedSegmentSumProgram = /** @class */ (function () {
         this.shaderKey = 'unsortedSegmentSum';
     }
     UnsortedSegmentSumProgram.prototype.getUserCode = function () {
-        var userCode = "\n    ".concat(getMainHeaderString('index'), " {\n      if (index < uniforms.xSize) {\n        let coords = getXCoordsFromIndex(index);\n        let b = coords[0];\n        let inCol = coords[1];\n\n        let segmentId = i32(getSegmentIds(inCol)) % uniforms.numSegments;\n        if (segmentId >= 0) {\n          let flatIndex = b * uniforms.numSegments + segmentId;\n          let value = getX(b, inCol);\n\n          ").concat(atomicAddSnippet('&result[flatIndex]', 'value', this.type), "\n        }\n      }\n    }\n  ");
+        var userCode = "\n    ".concat(getMainHeaderString('index'), " {\n      if (index < uniforms.xSize) {\n        let coords = getXCoordsFromIndex(index);\n        let b = coords[0];\n        let inCol = coords[1];\n\n        let segmentId = i32(getSegmentIds(inCol));\n        if (segmentId >= 0) {\n          let flatIndex = b * uniforms.numSegments + segmentId % uniforms.numSegments;\n          let value = getX(b, inCol);\n\n          ").concat(atomicAddSnippet('&result[flatIndex]', 'value', this.type), "\n        }\n      }\n    }\n  ");
         return userCode;
     };
     return UnsortedSegmentSumProgram;
