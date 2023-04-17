@@ -6,6 +6,7 @@ https://source.chromium.org/chromium/chromium/src/+/main:third_party/dawn/src/da
 (Only tried Ubuntu/Linux)
 
 2. Build tfjs
+
 (If you are in Linux, you can skip this and use tf-backend-webgpu.node.js in the root folder.)
 ```
 git clone https://github.com/axinging/tfjs.git -b tfjswebgpu_on_node
@@ -20,11 +21,13 @@ yarn && yarn build-npm
 ```
 
 3. Get model data:
+
 Download https://tfhub.dev/google/tfjs-model/imagenet/mobilenet_v3_small_075_224/classification/5/default/1?tfjs-format=compressed, 
 Unzip it, then put it into a web server, so it can be accessed by : http://127.0.0.1:8080/model.json
 
 
 4. Run
+
 (Currently some webgpu APIs are not fully supported in dawn, so this can be only used for dump shader, the predict results are invalid.)
 ```
 git clone https://github.com/axinging/webgpu-node.git
