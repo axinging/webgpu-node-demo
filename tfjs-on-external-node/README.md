@@ -1,8 +1,12 @@
 webgpu-node supports running webgpu and TensorflowJS(WIP) on NodeJS.
 
-Simple step on Linux:
+Simple steps on Linux:
 ```
+git clone https://github.com/axinging/webgpu-node.git
+cd webgpu-node/tfjs-on-external-node
+npm install
 cp binary/tf-backend-webgpu.node.js node_modules/@tensorflow/tfjs-backend-webgpu/dist/
+mkdir node_modules/@tensorflow/tfjs-backend-webgpu/build/
 cp binary/dawn.node node_modules/@tensorflow/tfjs-backend-webgpu/build/dawn.node
 node dawn.js
 ```
@@ -35,8 +39,6 @@ This will create tf-backend-webgpu.node.js under /home/abc/.cache/bazel/_bazel_w
 ```
 git clone https://github.com/axinging/webgpu-node.git
 cd webgpu-node/tfjs-on-external-node
-mkdir build
-cp dawn.node ./build
 npm install
 mkdir ./node_modules/@tensorflow/tfjs-backend-webgpu/build/
 cp dawn.node ./node_modules/@tensorflow/tfjs-backend-webgpu/build/
