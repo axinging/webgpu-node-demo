@@ -1,15 +1,27 @@
-const gpuProviderModule = require('bindings')('dawn');
 const tfwebgpu = require('@tensorflow/tfjs-backend-webgpu');
 const tf = require('@tensorflow/tfjs-core');
 
+const addSpec = {
+  'name': 'add',
+  'inputs':
+      [{'shape': [6], 'dtype': 'float32'}, {'shape': [6], 'dtype': 'float32'}]
+};
+
+function test() {
+  const shader = tf.backend().getShader(addSpec);
+  printShader(shader);
+}
+
+function printShader(shader) {
+  for (const key in shader) {
+    console.group(key);
+    console.debug(shader[key]);
+    console.groupEnd();
+  }
+}
+
 (async function main() {
-  tf.env().set('WEBGPU_CPU_FORWARD', false);
-  tf.env().set('WEBGPU_PRINT_SHADER', 'binary');
   await tf.setBackend('webgpu');
   await tf.ready();
-
-  const a = tf.tensor1d([1, 2, 3, 4]);
-  const b = tf.tensor1d([10, 20, 30, 40]);
-  const result = tf.add(a, b);
-  console.log(await result.data());
+  test();
 })();
