@@ -23,12 +23,7 @@ This will create dawn.node file under out-(you name it) folder.
 git clone https://github.com/axinging/tfjs.git -b getShader_node
 cd  tfjs
 yarn
-yarn bazel clean
 cd link-package && yarn build-deps-for tfjs-backend-webgpu tfjs-core tfjs-backend-cpu  tfjs-backend-webgl tfjs-converter
-cd ../tfjs-backend-webgpu && rm -fr node_modules && yarn && yarn build-npm
-yarn --cwd .. bazel build //tfjs-backend-webgpu/src:tests
-ln -s ../dist/bin/tfjs-backend-webgpu/src/tests.ts tests
-yarn && yarn build-npm
 ```
 
 This will create tf-backend-webgpu.node.js under /home/abc/.cache/bazel/_bazel_wp/*************b/execroot/tfjs/bazel-out/k8-fastbuild/bin/tfjs-backend-webgpu/tf-backend-webgpu.node.js
