@@ -1,4 +1,4 @@
-const getGPU= require('@axinging/webgpu');
+const nodeGPU = require('@axinging/webgpu');
 
 function getComputeShaderCodeWGSLGood() {
   return ` 
@@ -115,7 +115,7 @@ async function runCompute(device, shaderWgsl) {
 }
 
 (async function main() {
-  const GPU = getGPU();
+  const GPU = nodeGPU.getNodeGPU();
   const adapter = await GPU.requestAdapter();
   const device = await adapter.requestDevice();
   await runCompute(device, getComputeShaderCodeWGSLGood());

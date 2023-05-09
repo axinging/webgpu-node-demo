@@ -2178,8 +2178,9 @@ function callOp(inputSpec) {
 function requestAdapter(gpuDescriptor) {
     return __awaiter(this, void 0, void 0, function () {
         return __generator(this, function (_a) {
-            return [2 /*return*/, tf.device_util.isBrowser() ? navigator.gpu.requestAdapter(gpuDescriptor) :
-                    nodeWebGPU().requestAdapter(gpuDescriptor)];
+            return [2 /*return*/, tf.device_util.isBrowser() ?
+                    navigator.gpu.requestAdapter(gpuDescriptor) :
+                    nodeWebGPU.getNodeGPU().requestAdapter(gpuDescriptor)];
         });
     });
 }

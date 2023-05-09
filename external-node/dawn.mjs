@@ -1,4 +1,4 @@
-import  getGPU  from '@axinging/webgpu';
+import  nodeWebGPU  from '@axinging/webgpu';
 function getComputeShaderCodeWGSLGood() {
   return ` 
     struct Buf {
@@ -114,7 +114,7 @@ async function runCompute(device, shaderWgsl) {
 }
 
 (async function main() {
-  const GPU = getGPU(); 
+  const GPU = nodeWebGPU.getNodeGPU();
   console.log(GPU);
   console.log(typeof GPU);
   const adapter = await GPU.requestAdapter();
