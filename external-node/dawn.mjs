@@ -1,25 +1,4 @@
-//const gpuProviderModule = require('bindings')('dawn');
-import  gpuProviderModule1  from 'bindings';
-
-console.log(gpuProviderModule1);
-const gpuProviderModule = gpuProviderModule1('dawn');
-console.log(gpuProviderModule);
-
-let gpuProvider = null;
-function setGPUProvider() {
-  const gpuProviderFlags = ['disable-dawn-features=disallow_unsafe_apis'];
-  gpuProvider = () => gpuProviderModule.create(gpuProviderFlags);
-}
-let gpuImpl = null;
-function getGPU() {
-  if (gpuImpl) {
-    return gpuImpl;
-  }
-  gpuImpl = gpuProvider();
-  return gpuImpl;
-}
-
-
+import  getGPU  from '@axinging/webgpu';
 function getComputeShaderCodeWGSLGood() {
   return ` 
     struct Buf {
@@ -135,7 +114,6 @@ async function runCompute(device, shaderWgsl) {
 }
 
 (async function main() {
-  setGPUProvider();
   const GPU = getGPU(); 
   console.log(GPU);
   console.log(typeof GPU);
