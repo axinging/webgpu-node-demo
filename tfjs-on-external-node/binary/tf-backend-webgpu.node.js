@@ -17,7 +17,7 @@
 'use strict';
 
 var tf = require('@tensorflow/tfjs-core');
-var nodeGPUBinding = require('bindings');
+var nodeWebGPU = require('@axinging/webgpu');
 
 function _interopNamespaceDefault(e) {
     var n = Object.create(null);
@@ -2175,21 +2175,11 @@ function callOp(inputSpec) {
     });
 }
 
-var nodeGPU = null;
-function getNodeGPU() {
-    if (nodeGPU) {
-        return nodeGPU;
-    }
-    var gpuProviderModule = nodeGPUBinding('dawn');
-    var gpuProviderFlags = ['disable-dawn-features=disallow_unsafe_apis'];
-    nodeGPU = gpuProviderModule.create(gpuProviderFlags);
-    return nodeGPU;
-}
 function requestAdapter(gpuDescriptor) {
     return __awaiter(this, void 0, void 0, function () {
         return __generator(this, function (_a) {
             return [2 /*return*/, tf.device_util.isBrowser() ? navigator.gpu.requestAdapter(gpuDescriptor) :
-                    getNodeGPU().requestAdapter(gpuDescriptor)];
+                    nodeWebGPU().requestAdapter(gpuDescriptor)];
         });
     });
 }
