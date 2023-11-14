@@ -20,7 +20,7 @@ This will create dawn.node file under out-(you name it) folder.
 2. Build tfjs
 
 ```
-git clone https://github.com/axinging/tfjs.git -b getShader_node
+git clone https://github.com/axinging/tfjs.git -b tfjswebgpu_on_node
 cd  tfjs
 yarn
 cd link-package && yarn build-deps-for tfjs-backend-webgpu tfjs-core tfjs-backend-cpu  tfjs-backend-webgl tfjs-converter
